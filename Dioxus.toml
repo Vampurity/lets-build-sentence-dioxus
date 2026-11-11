@@ -1,0 +1,10 @@
+[application]
+name = "lets-build-sentence"
+default_platform = "web"
+
+[web.app]
+title = "在线造句练习"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "assets"]
