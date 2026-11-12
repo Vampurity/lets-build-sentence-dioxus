@@ -1,8 +1,9 @@
-use dioxus::prelude::*;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use std::cell::Cell;
+use std::rc::Rc;
 
-use crate::dom::{self, listener_slot};
+use dioxus::prelude::*;
+
+use crate::host::{self, HostBus};
 use crate::ui::icons::{CloseIcon, NoDataIcon};
 
 const MODAL_CLIP: &str = "M0.501,0.005 L0.501,0.005 L0.523,0.005 L0.549,0.006 C0.704,0.01,0.796,0.017,0.825,0.027 L0.827,0.028 C0.872,0.045,0.939,0.044,0.978,0.17 C1,0.254,1,0.365,0.99,0.505 L0.988,0.513 C0.979,0.558,0.971,0.598,0.965,0.633 C0.956,0.689,0.979,0.77,0.964,0.865 C0.953,0.928,0.921,0.966,0.869,0.979 C0.821,0.986,0.773,0.992,0.726,0.995 L0.712,0.996 L0.694,0.997 C0.648,1,0.586,1,0.507,1 L0.501,1 L0.464,1 C0.385,1,0.325,0.998,0.283,0.995 C0.234,0.992,0.184,0.987,0.133,0.979 C0.081,0.966,0.05,0.928,0.039,0.865 C0.023,0.77,0.047,0.689,0.037,0.633 C0.031,0.595,0.023,0.552,0.013,0.505 C-0.006,0.365,-0.002,0.254,0.024,0.17 C0.064,0.045,0.13,0.045,0.174,0.028 L0.175,0.028 C0.204,0.017,0.303,0.009,0.474,0.005 L0.501,0.005";
@@ -20,29 +21,23 @@ pub fn Modal(
     if open_state() != open {
         open_state.set(open);
     }
-    let listeners = use_hook(listener_slot);
+    let bus = use_context::<HostBus>();
+    let seen_escape = use_hook(|| Rc::new(Cell::new(u32::MAX)));
     use_effect(move || {
-        dom::set_overflow(open_state());
-        listeners.borrow_mut().take();
-        if !open_state() {
+        host::set_overflow_hidden(open_state());
+    });
+    use_effect(move || {
+        let tick = bus.escape_tick();
+        if seen_escape.get() == u32::MAX {
+            seen_escape.set(tick);
             return;
         }
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            let Ok(key_event) = event.dyn_into::<web_sys::KeyboardEvent>() else {
-                return;
-            };
-            if key_event.key() == "Escape" {
-                key_event.prevent_default();
-                on_close.call(());
-            }
-        });
-        if let Some(window) = dom::window() {
-            *listeners.borrow_mut() = Some(dom::DomListener::listen(
-                dom::event_target(&window),
-                "keydown",
-                false,
-                closure,
-            ));
+        if tick == seen_escape.get() {
+            return;
+        }
+        seen_escape.set(tick);
+        if open_state() {
+            on_close.call(());
         }
     });
 
@@ -154,7 +149,7 @@ impl Toasts {
         self.push(ToastKind::Warning, message);
     }
 
-fn push(self, kind: ToastKind, message: impl Into<String>) {
+    fn push(self, kind: ToastKind, message: impl Into<String>) {
         let message = message.into();
         let id = {
             let mut items = self.0;
@@ -164,16 +159,10 @@ fn push(self, kind: ToastKind, message: impl Into<String>) {
             id
         };
         let mut items = self.0;
-        let closure = wasm_bindgen::closure::Closure::once(move || {
+        dioxus::core::spawn_forever(async move {
+            host::sleep_ms(4000).await;
             items.write().retain(|item| item.id != id);
         });
-        if let Some(window) = dom::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                4000,
-            );
-            closure.forget();
-        }
     }
 }
 

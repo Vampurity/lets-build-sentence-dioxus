@@ -1,14 +1,17 @@
-use dioxus::prelude::*;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use std::cell::Cell;
+use std::rc::Rc;
 
-use crate::dom::{self, listener_slot};
+use dioxus::prelude::*;
+
+use crate::host::{self, AnchorRect, HostBus, BANK_SELECT_ID, BANK_SELECT_TRIGGER_ID};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SelectOption {
     pub key: String,
     pub label: String,
 }
+
+const MENU_FALLBACK: &str = "position:absolute;top:calc(100% + 6px);left:0;min-width:220px;";
 
 #[component]
 pub fn Select(
@@ -20,32 +23,22 @@ pub fn Select(
     let mut open = use_signal(|| false);
     let mut active = use_signal(|| None::<String>);
     let mut menu_style = use_signal(String::new);
-    let listeners = use_hook(listener_slot);
+    let bus = use_context::<HostBus>();
+    let seen_outside = use_hook(|| Rc::new(Cell::new(u32::MAX)));
     let option_list = options.clone();
 
     use_effect(move || {
-        listeners.borrow_mut().take();
-        if !open() {
+        let tick = bus.outside_tick();
+        if seen_outside.get() == u32::MAX {
+            seen_outside.set(tick);
             return;
         }
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            let Some(target) = event.target() else {
-                return;
-            };
-            let Ok(node) = target.dyn_into::<web_sys::Node>() else {
-                return;
-            };
-            let inside = dom::element_by_id("bank-select")
-                .map(|root| root.contains(Some(&node)))
-                .unwrap_or(false);
-            if !inside {
-                open.set(false);
-            }
-        });
-        if let Some(document) = dom::document() {
-            let target = document.unchecked_into::<web_sys::EventTarget>();
-            *listeners.borrow_mut() =
-                Some(dom::DomListener::listen(target, "mousedown", false, closure));
+        if tick == seen_outside.get() {
+            return;
+        }
+        seen_outside.set(tick);
+        if open() {
+            open.set(false);
         }
     });
 
@@ -67,13 +60,21 @@ pub fn Select(
 
     rsx! {
         div {
-            id: "bank-select",
+            id: "{BANK_SELECT_ID}",
             class: "animal-wrapper-pbOTq",
             onkeydown: move |event| {
-                handle_key(event, open, active, &option_list, keydown_value.clone(), on_change);
+                handle_key(
+                    event,
+                    open,
+                    active,
+                    menu_style,
+                    &option_list,
+                    keydown_value.clone(),
+                    on_change,
+                );
             },
             div {
-                id: "bank-select-trigger",
+                id: "{BANK_SELECT_TRIGGER_ID}",
                 class: "{trigger_class}",
                 role: "combobox",
                 tabindex: "0",
@@ -81,12 +82,15 @@ pub fn Select(
                 aria_expanded: open().to_string(),
                 aria_haspopup: "listbox",
                 onclick: move |_| {
-                    let next = !open();
-                    if next {
-                        menu_style.set(menu_position());
-                        active.set(Some(click_value.clone()));
+                    let click_value = click_value.clone();
+                    async move {
+                        let next = !open();
+                        if next {
+                            menu_style.set(position_style().await);
+                            active.set(Some(click_value));
+                        }
+                        open.set(next);
                     }
-                    open.set(next);
                 },
                 span { class: "animal-value-623RB", "{label}" }
                 span { class: "animal-arrow-xNbxA", aria_hidden: "true",
@@ -165,6 +169,7 @@ fn handle_key(
     event: KeyboardEvent,
     mut open: Signal<bool>,
     mut active: Signal<Option<String>>,
+    mut menu_style: Signal<String>,
     options: &[SelectOption],
     value: String,
     on_change: EventHandler<String>,
@@ -175,8 +180,11 @@ fn handle_key(
             || matches!(key, Key::Character(ref text) if text == " ");
         if opens {
             event.prevent_default();
-            open.set(true);
             active.set(Some(value));
+            dioxus::core::spawn_forever(async move {
+                menu_style.set(position_style().await);
+                open.set(true);
+            });
         }
         return;
     }
@@ -225,35 +233,25 @@ fn move_active(mut active: Signal<Option<String>>, options: &[SelectOption], del
     active.set(Some(options[next].key.clone()));
 }
 
-fn menu_position() -> String {
-    let Some(trigger) = dom::element_by_id("bank-select-trigger") else {
-        return "position:absolute;top:calc(100% + 6px);left:0;min-width:220px;".to_string();
+async fn position_style() -> String {
+    let Some(rect) = host::anchor_rect(BANK_SELECT_TRIGGER_ID).await else {
+        return MENU_FALLBACK.to_string();
     };
-    let rect = trigger.get_bounding_client_rect();
-    let Some(window) = dom::window() else {
-        return "position:absolute;top:calc(100% + 6px);left:0;min-width:220px;".to_string();
-    };
-    let width = window
-        .inner_width()
-        .ok()
-        .and_then(|value| value.as_f64())
-        .unwrap_or(1200.0);
-    let height = window
-        .inner_height()
-        .ok()
-        .and_then(|value| value.as_f64())
-        .unwrap_or(800.0);
+    menu_style_for(rect)
+}
+
+fn menu_style_for(rect: AnchorRect) -> String {
     let mut style = String::from("position:absolute;min-width:220px;");
-    if rect.right() + 220.0 > width {
+    if rect.right + 220.0 > rect.width {
         style.push_str("right:100%;margin-right:6px;left:auto;");
     } else {
         style.push_str("left:100%;margin-left:6px;right:auto;");
     }
-    let below = height - rect.bottom();
-    let above = rect.top();
+    let below = rect.height - rect.bottom;
+    let above = rect.top;
     if below < 220.0 && above > below {
         style.push_str("top:auto;bottom:100%;margin-bottom:6px;");
-    } else if below < 220.0 || rect.top() < 220.0 {
+    } else if below < 220.0 || rect.top < 220.0 {
         style.push_str("top:100%;margin-top:6px;bottom:auto;");
     } else {
         style.push_str("top:50%;bottom:auto;transform:translateY(-50%);");

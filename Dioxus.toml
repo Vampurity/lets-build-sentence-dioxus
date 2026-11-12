@@ -1,6 +1,16 @@
 [application]
 name = "lets-build-sentence"
 default_platform = "web"
+android_min_sdk_version = 28
+
+[bundle]
+identifier = "app.letsbuildsentence"
+publisher = "lets-build-sentence"
+
+[android]
+min_sdk = 28
+target_sdk = 35
+compile_sdk = 35
 
 [web.app]
 title = "在线造句练习"

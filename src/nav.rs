@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
-use wasm_bindgen::JsValue;
 
 use crate::banks::{catalog, COLLECTION_ID};
+use crate::host;
 
 #[derive(Clone, Copy)]
 pub struct Nav {
@@ -47,8 +47,7 @@ impl Nav {
         self.visit(&back, true);
     }
 
-    pub fn sync_from_browser(mut self) {
-        let next = current_pathname();
+    pub fn sync_path(mut self, next: String) {
         if next != "/settings" {
             self.behind.set(next.clone());
         }
@@ -56,35 +55,19 @@ impl Nav {
     }
 
     fn visit(mut self, to: &str, replace: bool) {
-        if current_pathname() != to {
-            if let Some(window) = web_sys::window() {
-                if let Ok(history) = window.history() {
-                    let result = if replace {
-                        history.replace_state_with_url(&JsValue::NULL, "", Some(to))
-                    } else {
-                        history.push_state_with_url(&JsValue::NULL, "", Some(to))
-                    };
-                    let _ = result;
-                }
-            }
+        if self.path.read().as_str() == to {
+            return;
         }
+        host::history_move(to, replace);
         self.path.set(to.to_string());
     }
 }
 
-pub fn current_pathname() -> String {
-    web_sys::window()
-        .and_then(|window| window.location().pathname().ok())
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| "/".to_string())
-}
-
-pub fn initial_behind() -> String {
-    let path = current_pathname();
+pub fn initial_behind(path: &str) -> String {
     if path == "/settings" {
         "/".to_string()
     } else {
-        path
+        path.to_string()
     }
 }
 

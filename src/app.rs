@@ -1,9 +1,8 @@
 use dioxus::prelude::*;
-use wasm_bindgen::closure::Closure;
 
-use crate::dom::{self, listener_slot};
-use crate::nav::{initial_behind, parse_page, current_pathname, Nav, Page};
-use crate::storage::{FavoriteStore, SettingsStore};
+use crate::host::{self, HostBus, Shortcut};
+use crate::nav::{initial_behind, parse_page, Nav, Page};
+use crate::storage::{favorites_from_storage, settings_from_storage, FavoriteStore, SettingsStore};
 use crate::ui::{shell_style, Background, Button, NoData, ToastRegion, Toasts};
 
 const ZCOOL_LATIN: Asset = asset!("/assets/fonts/zcool-kuaile-latin-400-normal.woff2");
@@ -11,46 +10,45 @@ const ZCOOL_CJK: Asset = asset!("/assets/fonts/zcool-kuaile-chinese-simplified-4
 
 #[component]
 pub fn App() -> Element {
-    let path = use_signal(current_pathname);
-    let behind = use_signal(initial_behind);
+    let mut path = use_signal(|| "/".to_string());
+    let mut behind = use_signal(|| "/".to_string());
+    let mut shortcut = use_signal(|| Shortcut::Ctrl);
+    let mut ready = use_signal(|| false);
     let nav = Nav::new(path, behind);
     use_context_provider(|| nav);
-    let _settings = SettingsStore::provide();
-    let _favorites = FavoriteStore::provide();
+    use_context_provider(|| shortcut);
+    let settings_store = SettingsStore::provide();
+    let favorites = FavoriteStore::provide();
     let _toasts = Toasts::provide();
-    let listeners = use_hook(listener_slot);
+    let bus = HostBus::provide();
+    let started = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(false)));
 
     use_effect(move || {
-        if listeners.borrow().is_some() {
+        if started.get() {
             return;
         }
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-            nav.sync_from_browser();
+        started.set(true);
+        spawn(async move {
+            let loaded = host::boot().await;
+            path.set(loaded.path.clone());
+            behind.set(initial_behind(&loaded.path));
+            settings_store.replace(settings_from_storage(loaded.settings.as_deref()));
+            favorites.replace(favorites_from_storage(loaded.favorites.as_deref()));
+            shortcut.set(loaded.shortcut);
+            host::run_session(bus, move || ready.set(true)).await;
         });
-        if let Some(window) = dom::window() {
-            *listeners.borrow_mut() = Some(dom::DomListener::listen(
-                dom::event_target(&window),
-                "popstate",
-                false,
-                closure,
-            ));
-        }
     });
-
-    let settings = use_context::<SettingsStore>().get();
-    let show_settings = nav.show_settings();
-    let page = parse_page(&nav.page_path());
 
     use_effect(move || {
-        let hide = nav.show_settings();
-        if let Some(layer) = dom::element_by_id("page-layer") {
-            if hide {
-                let _ = layer.set_attribute("inert", "");
-            } else {
-                let _ = layer.remove_attribute("inert");
-            }
+        for next in bus.drain_popstate() {
+            nav.sync_path(next);
         }
     });
+
+    let settings = settings_store.get();
+    let show_settings = nav.show_settings();
+    let show_pages = ready();
+    let page = parse_page(&nav.page_path());
 
     rsx! {
         document::Title { "在线造句练习" }
@@ -80,26 +78,29 @@ pub fn App() -> Element {
             kind: settings.background,
             class: "animal-cursor animal-cursor--force app-shell".to_string(),
             style: shell_style(settings),
-            div {
-                id: "page-layer",
-                hidden: show_settings,
-                match page {
-                    Page::Library => rsx! { crate::pages::LibraryPage {} },
-                    Page::Practice(bank_id) => rsx! { crate::pages::PracticePage { key: "{bank_id}", bank_id } },
-                    Page::Missing => rsx! {
-                        main { class: "page",
-                            NoData {
-                                title: "这个页面不存在".to_string(),
-                                extra: rsx! { Button { onclick: move |_| nav.go("/"), "返回题库" } },
+            if show_pages {
+                div {
+                    id: "page-layer",
+                    hidden: show_settings.then_some("true"),
+                    inert: show_settings.then_some("true"),
+                    match page {
+                        Page::Library => rsx! { crate::pages::LibraryPage {} },
+                        Page::Practice(bank_id) => rsx! { crate::pages::PracticePage { key: "{bank_id}", bank_id } },
+                        Page::Missing => rsx! {
+                            main { class: "page",
+                                NoData {
+                                    title: "这个页面不存在".to_string(),
+                                    extra: rsx! { Button { onclick: move |_| nav.go("/"), "返回题库" } },
+                                }
                             }
-                        }
-                    },
+                        },
+                    }
                 }
+                if show_settings {
+                    crate::pages::SettingsPage {}
+                }
+                ToastRegion {}
             }
-            if show_settings {
-                crate::pages::SettingsPage {}
-            }
-            ToastRegion {}
         }
     }
 }

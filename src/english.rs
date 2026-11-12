@@ -1,15 +1,20 @@
-const fn is_allowed_char(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-        || matches!(
-            c,
-            ' ' | '\t' | '.' | ',' | '!' | '?' | '\'' | '"' | ':' | ';' | '(' | ')' | '-' | '/' | '&'
-        )
+pub const EXTRA_CHARS: &[char] = &[
+    ' ', '\t', '.', ',', '!', '?', '\'', '"', ':', ';', '(', ')', '-', '/', '&',
+];
+
+fn is_allowed_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || EXTRA_CHARS.contains(&c)
+}
+
+pub fn allowed_extra_literal() -> String {
+    serde_json::to_string(&EXTRA_CHARS.iter().collect::<String>()).expect("英文允许字符可序列化")
 }
 
 fn with_spaces(value: &str) -> String {
     value.replace("\r\n", " ").replace(['\n', '\r'], " ")
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn is_allowed_english_insert(data: &str) -> bool {
     with_spaces(data).chars().all(is_allowed_char)
 }
@@ -107,6 +112,45 @@ mod tests {
         assert!(!is_allowed_english_insert("你"));
         assert!(!is_allowed_english_insert("hello你好"));
         assert!(!is_allowed_english_insert("😀"));
+    }
+
+    #[test]
+    fn script_charset_matches_the_filter() {
+        let literal = allowed_extra_literal();
+        let extras: String = serde_json::from_str(&literal).unwrap();
+        assert_eq!(extras.chars().collect::<Vec<_>>(), EXTRA_CHARS);
+        let samples = [
+            "hello",
+            "Don't!",
+            "a b, c?",
+            "你",
+            "hello你好",
+            "😀",
+            "hello\nworld",
+            "hello\r\nworld",
+            "",
+            "rock & roll",
+            "hi\tthere",
+            "a/b",
+            "()",
+            "\"quote\"",
+            "it's",
+            "1:2;3",
+            "ｈello",
+        ];
+        for sample in samples {
+            let by_script = with_spaces(sample)
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || extras.contains(ch));
+            assert_eq!(is_allowed_english_insert(sample), by_script, "{sample:?}");
+        }
+        for ch in (0u8..=127).map(char::from) {
+            let data = ch.to_string();
+            let by_script = with_spaces(&data)
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || extras.contains(ch));
+            assert_eq!(is_allowed_english_insert(&data), by_script, "{ch:?}");
+        }
     }
 
     #[test]
